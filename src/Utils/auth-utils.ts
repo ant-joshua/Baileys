@@ -2,23 +2,33 @@ import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
 import type { Logger } from 'pino'
 import { proto } from '../../WAProto'
-import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap, SignalKeyStore, SignalKeyStoreWithTransaction } from '../Types'
+import type {
+	AuthenticationCreds,
+	AuthenticationState,
+	SignalDataSet,
+	SignalDataTypeMap,
+	SignalKeyStore,
+	SignalKeyStoreWithTransaction,
+} from '../Types'
 import { Curve, signedKeyPair } from './crypto'
 import { BufferJSON, generateRegistrationId } from './generics'
 
 const KEY_MAP: { [T in keyof SignalDataTypeMap]: string } = {
 	'pre-key': 'preKeys',
-	'session': 'sessions',
+	session: 'sessions',
 	'sender-key': 'senderKeys',
 	'app-state-sync-key': 'appStateSyncKeys',
 	'app-state-sync-version': 'appStateVersions',
-	'sender-key-memory': 'senderKeyMemory'
+	'sender-key-memory': 'senderKeyMemory',
 }
 
-export const addTransactionCapability = (state: SignalKeyStore, logger: Logger): SignalKeyStoreWithTransaction => {
+export const addTransactionCapability = (
+	state: SignalKeyStore,
+	logger: Logger
+): SignalKeyStoreWithTransaction => {
 	let inTransaction = false
-	let transactionCache: SignalDataSet = { }
-	let mutations: SignalDataSet = { }
+	let transactionCache: SignalDataSet = {}
+	let mutations: SignalDataSet = {}
 
 	const prefetch = async(type: keyof SignalDataTypeMap, ids: string[]) => {
 		if(!inTransaction) {
@@ -26,12 +36,14 @@ export const addTransactionCapability = (state: SignalKeyStore, logger: Logger):
 		}
 
 		const dict = transactionCache[type]
-		const idsRequiringFetch = dict ? ids.filter(item => !(item in dict)) : ids
+		const idsRequiringFetch = dict
+			? ids.filter((item) => !(item in dict))
+			: ids
 		// only fetch if there are any items to fetch
 		if(idsRequiringFetch.length) {
 			const result = await state.get(type, idsRequiringFetch)
 
-			transactionCache[type] = transactionCache[type] || { }
+			transactionCache[type] = transactionCache[type] || {}
 			Object.assign(transactionCache[type], result)
 		}
 	}
@@ -40,28 +52,26 @@ export const addTransactionCapability = (state: SignalKeyStore, logger: Logger):
 		get: async(type, ids) => {
 			if(inTransaction) {
 				await prefetch(type, ids)
-				return ids.reduce(
-					(dict, id) => {
-						const value = transactionCache[type]?.[id]
-						if(value) {
-							dict[id] = value
-						}
+				return ids.reduce((dict, id) => {
+					const value = transactionCache[type]?.[id]
+					if(value) {
+						dict[id] = value
+					}
 
-						return dict
-					}, { }
-				)
+					return dict
+				}, {})
 			} else {
 				return state.get(type, ids)
 			}
 		},
-		set: data => {
+		set: (data) => {
 			if(inTransaction) {
 				logger.trace({ types: Object.keys(data) }, 'caching in transaction')
 				for(const key in data) {
-					transactionCache[key] = transactionCache[key] || { }
+					transactionCache[key] = transactionCache[key] || {}
 					Object.assign(transactionCache[key], data[key])
 
-					mutations[key] = mutations[key] || { }
+					mutations[key] = mutations[key] || {}
 					Object.assign(mutations[key], data[key])
 				}
 			} else {
@@ -89,11 +99,11 @@ export const addTransactionCapability = (state: SignalKeyStore, logger: Logger):
 					}
 				} finally {
 					inTransaction = false
-					transactionCache = { }
-					mutations = { }
+					transactionCache = {}
+					mutations = {}
 				}
 			}
-		}
+		},
 	}
 }
 
@@ -108,16 +118,19 @@ export const initAuthCreds = (): AuthenticationCreds => {
 
 		nextPreKeyId: 1,
 		firstUnuploadedPreKeyId: 1,
-		serverHasPreKeys: false
+		serverHasPreKeys: false,
 	}
 }
 
 /** stores the full authentication state in a single JSON file */
-export const useSingleFileAuthState = (filename: string, logger?: Logger): { state: AuthenticationState, saveState: () => void } => {
+export const useSingleFileAuthState = (
+	filename: string,
+	logger?: Logger
+): { state: AuthenticationState; saveState: () => void } => {
 	// require fs here so that in case "fs" is not available -- the app does not crash
 	const { readFileSync, writeFileSync, existsSync } = require('fs')
 	let creds: AuthenticationCreds
-	let keys: any = { }
+	let keys: any = {}
 
 	// save the authentication state to a file
 	const saveState = () => {
@@ -128,51 +141,107 @@ export const useSingleFileAuthState = (filename: string, logger?: Logger): { sta
 			JSON.stringify({ creds, keys }, BufferJSON.replacer, 2)
 		)
 	}
-	
+
 	if(existsSync(filename)) {
 		const result = JSON.parse(
-			readFileSync(filename, { encoding: 'utf-8' }), 
+			readFileSync(filename, { encoding: 'utf-8' }),
 			BufferJSON.reviver
 		)
 		creds = result.creds
 		keys = result.keys
 	} else {
 		creds = initAuthCreds()
-		keys = { }
+		keys = {}
 	}
 
-	return { 
-		state: { 
+	return {
+		state: {
 			creds,
 			keys: {
 				get: (type, ids) => {
 					const key = KEY_MAP[type]
-					return ids.reduce(
-						(dict, id) => {
-							let value = keys[key]?.[id]
-							if(value) {
-								if(type === 'app-state-sync-key') {
-									value = proto.AppStateSyncKeyData.fromObject(value)
-								}
-
-								dict[id] = value
+					return ids.reduce((dict, id) => {
+						let value = keys[key]?.[id]
+						if(value) {
+							if(type === 'app-state-sync-key') {
+								value = proto.AppStateSyncKeyData.fromObject(value)
 							}
 
-							return dict
-						}, { }
-					)
+							dict[id] = value
+						}
+
+						return dict
+					}, {})
 				},
 				set: (data) => {
 					for(const _key in data) {
 						const key = KEY_MAP[_key as keyof SignalDataTypeMap]
-						keys[key] = keys[key] || { }
+						keys[key] = keys[key] || {}
 						Object.assign(keys[key], data[_key])
 					}
 
 					saveState()
-				}
-			}
-		}, 
-		saveState 
+				},
+			},
+		},
+		saveState,
+	}
+}
+
+/** get authentication state from JSON Object **/
+export const useJSONAuthState = (
+	json: any,
+	logger?: Logger
+): { state: AuthenticationState; getState: () => string } => {
+	let creds: AuthenticationCreds
+	let keys: any = {}
+
+	// return JSON string for creds and keys
+	const getState = () => {
+		logger && logger.trace('saving auth state')
+
+
+		return JSON.stringify({ creds, keys })
+	}
+
+	if(json) {
+		const stringInput = JSON.stringify(json, BufferJSON.replacer, 2)
+		const result = JSON.parse(stringInput, BufferJSON.reviver)
+		creds = result.creds
+		keys = result?.keys || {}
+	} else {
+		creds = exports.initAuthCreds()
+		keys = {}
+	}
+
+	return {
+		state: {
+			creds,
+			keys: {
+				get: (type, ids) => {
+					const key = KEY_MAP[type]
+					return ids.reduce((dict, id) => {
+						let value = keys[key]?.[id]
+						if(value) {
+							if(type === 'app-state-sync-key') {
+								value = proto.AppStateSyncKeyData.fromObject(value)
+							}
+
+							dict[id] = value
+						}
+
+						return dict
+					}, {})
+				},
+				set: (data) => {
+					for(const _key in data) {
+						const key = KEY_MAP[_key as keyof SignalDataTypeMap]
+						keys[key] = keys[key] || {}
+						Object.assign(keys[key], data[_key])
+					}
+				},
+			},
+		},
+		getState,
 	}
 }
